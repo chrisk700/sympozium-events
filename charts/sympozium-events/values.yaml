@@ -1,0 +1,252 @@
+# sympozium-events values
+# Reference: https://github.com/chrisk700/sympozium-events
+
+# ──────────────────────────────────────────────
+# Argo Events installation
+# ──────────────────────────────────────────────
+argoEvents:
+  # Set false to skip the bundled Argo Events subchart (advanced, unsupported).
+  # All EventSource/Sensor/EventBus resources are still created in the release namespace.
+  install: true
+
+# ──────────────────────────────────────────────
+# Sympozium namespace
+# ──────────────────────────────────────────────
+namespace: sympozium-system
+
+# ──────────────────────────────────────────────
+# Event bus — Argo Events manages its own JetStream StatefulSet
+# ──────────────────────────────────────────────
+eventbus:
+  # JetStream version tag for the NATS image Argo Events deploys
+  version: "latest"
+  # Name of the EventBus CR referenced in EventSource/Sensor eventBusName.
+  # Matches the name of the EventBus CR created by eventbus.yaml (T08).
+  name: "default"
+
+# ──────────────────────────────────────────────
+# Tailscale (operator install is out of band)
+# ──────────────────────────────────────────────
+# Two exposure modes — pick one:
+#
+#   tailnet-only  (funnel: false)
+#     Injects tailscale.com/expose and related annotations into the
+#     EventSource Service so the Tailscale Operator proxies it onto
+#     your tailnet.  Reachable only by tailnet members.
+#     Protocol: plain HTTP on the webhook port (default 12000).
+#     The tailnet WireGuard layer provides transport encryption — there
+#     is no TLS at the HTTP layer.
+#     Hostname: set via tailscale.com/hostname annotation (tailscale.annotations).
+#     URL form: http://<hostname>.<tailnet>.ts.net:<port>/<endpoint>
+#
+#   funnel        (funnel: true)
+#     Creates a Kubernetes Ingress (ingressClassName: tailscale) per
+#     webhook route.  The operator provisions a Funnel proxy that
+#     exposes the EventSource to the public internet over HTTPS.
+#     Also reachable from within the tailnet — no Service annotation needed.
+#     Protocol: HTTPS on port 443, Let's Encrypt cert, TLS 1.3.
+#     Hostname: derived from the route name (routes[].name) by default.
+#     Override per-route with routes[].tailscaleHostname.
+#     URL form: https://<route-name>.<tailnet>.ts.net/<endpoint>
+#     Note: the tailnet-only hostname (tailscale.com/hostname annotation) and
+#     the funnel hostname (route name) are configured independently — set
+#     routes[].tailscaleHostname to align them if needed.
+#
+#     Additional ACL prerequisite for funnel mode (set in Tailscale admin):
+#       "nodeAttrs": [{"target": ["tag:k8s"], "attr": ["funnel"]}]
+#     Without this entry the proxy pod starts but Funnel is silently inactive.
+#
+tailscale:
+  enabled: false
+  funnel: false
+  # Hostname for the single shared Ingress in funnel mode.
+  # Resolves to <hostname>.<tailnet>.ts.net — one Tailscale device for all routes.
+  # Defaults to the Helm release name when empty.
+  hostname: ""
+  # tailnet-only mode: annotations injected into EventSource spec.service.metadata.annotations.
+  # Ignored when funnel: true (the Ingress handles exposure instead).
+  # Minimum for tailnet exposure:
+  #   tailscale.com/expose: "true"
+  #   tailscale.com/hostname: <short-name>   # optional, defaults to operator-assigned name
+  annotations: {}
+  # "annotation" uses EventSource annotation passthrough (preferred).
+  # "job"        uses a post-install Job to patch the Service (fallback for controllers
+  #              that do not support spec.service.metadata.annotations).
+  annotationMode: annotation
+  # kubectl image used by the post-install Job (annotationMode: job only).
+  # bitnami/kubectl ships only kubectl — minimal image, no extra shell utilities required.
+  # Pin to a digest (e.g. bitnami/kubectl@sha256:...) for production environments.
+  kubectl:
+    image: "bitnami/kubectl:1.29"
+
+# ──────────────────────────────────────────────
+# Session deduplication — known limitation
+# ──────────────────────────────────────────────
+# Argo Events fires once per HTTP POST regardless of payload identity.
+# Two identical webhook payloads → two AgentRun CRs sharing the same sessionKey.
+#
+# Chart-side mitigation (sender responsibility — Option A):
+#   Senders can set the `Nats-Msg-Id` HTTP header to a stable value (e.g. the
+#   PagerDuty incident ID). The Argo Events JetStream event bus deduplicates
+#   messages with the same Nats-Msg-Id within a 300-second window, preventing
+#   a second AgentRun from being created for the same event within that window.
+#
+#   Example curl:
+#     curl -X POST https://<host>/<endpoint> \
+#       -H 'Nats-Msg-Id: incident-<id>' \
+#       -H 'Content-Type: application/json' \
+#       -d '<payload>'
+#
+#   Limitations: only suppresses re-delivery within 300s; does not handle the
+#   case where the same incident alert fires again after the window expires.
+#
+# Long-term fix (Sympozium-side — Option D):
+#   Sympozium AgentRun upsert / sessionMode: append. Tracked as a PRD-08
+#   feature request. Not a chart concern.
+# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────
+# AgentRun defaults — applied to every AgentRun created by the Sensor
+# ──────────────────────────────────────────────
+agentRun:
+  agentId: "event-triggered"
+  # keep — AgentRun CR is retained after completion for debugging.
+  # delete — CR is deleted after the run finishes.
+  cleanup: delete
+  # model is required by the AgentRun CRD.
+  model:
+    provider: ""
+    baseURL: ""
+    model: ""
+    authSecretRef: ""
+
+# ──────────────────────────────────────────────
+# Service account
+# ──────────────────────────────────────────────
+serviceAccount:
+  create: true
+  # Name used when create: false — binds an existing SA in the RoleBinding
+  name: ""
+
+# ──────────────────────────────────────────────
+# Network policy
+# ──────────────────────────────────────────────
+networkPolicy:
+  # Allow egress from EventSource/Sensor pods → EventBus JetStream on port 4222
+  # and → sympozium-system for AgentRun CR creation
+  enabled: true
+
+# ──────────────────────────────────────────────
+# conditionsReset cron schedule
+# Argo Events native mechanism for resetting partial AND condition state.
+# Maps to spec.triggers[].template.conditionsReset[].byTime.cron in the Sensor.
+# Only emitted on routes that have a condition set.
+# Overridable per route via routes[].conditionsResetCron.
+# Leave empty to disable conditionsReset (partial AND state persists indefinitely).
+# Examples:
+#   "* * * * *"    — reset every minute
+#   "*/5 * * * *"  — reset every 5 min
+#   "*/30 * * * *" — reset every 30 min
+#   "0 * * * *"    — reset every hour
+# ──────────────────────────────────────────────
+conditionsResetCron: ""
+
+# ──────────────────────────────────────────────
+# Default task templates per source type
+# Overridable per target via routes[].targets[].taskTemplate
+# ──────────────────────────────────────────────
+defaults:
+  taskTemplates:
+    webhook: |
+      Event received: {{ .Input.body | toJson }}
+    pagerduty: |
+      Incident triggered: {{ .Input.body.messages.0.incident.title }}
+      Service: {{ .Input.body.messages.0.incident.service.name }}
+      Urgency: {{ .Input.body.messages.0.incident.urgency }}
+      URL: {{ .Input.body.messages.0.incident.html_url }}
+    github: |
+      PR merged: {{ .Input.body.pull_request.title }}
+      Author: {{ .Input.body.pull_request.user.login }}
+      Branch: {{ .Input.body.pull_request.head.ref }}
+    sqs: |
+      SQS message received: {{ .Input.body.Message }}
+    sns: |
+      SNS notification received: {{ .Input.body.Message }}
+    calendar: |
+      Scheduled event fired at {{ .Input.eventTime }}
+    resource: |
+      Kubernetes resource event: {{ .Input.body.metadata.name }} ({{ .Input.body.kind }})
+    nats: |
+      NATS message received: {{ .Input.body | toJson }}
+
+# ──────────────────────────────────────────────
+# Routes
+# Each route produces one Sensor and one or more EventSources.
+#
+# Deduplication note: set `Nats-Msg-Id` header in the sender request to a stable
+# event identifier (e.g. PagerDuty incident ID) for 300s JetStream dedup.
+# See "Session deduplication" section above for details.
+# ──────────────────────────────────────────────
+routes: []
+
+# ──────────────────────────────────────────────
+# argo-events subchart overrides
+# CRDs are extracted from the subchart tgz at build time into charts/sympozium-events/crds/
+# so Helm installs them before any templates. Disable subchart CRD install to avoid conflict.
+# ──────────────────────────────────────────────
+argo-events:
+  crds:
+    install: false
+    keep: true
+# Example:
+# routes:
+#   - name: incident-response
+#     sources:
+#       # webhook — optional: port (default "12000"), endpoint (default "/<name>"), method (default POST)
+#       # auth.secretName (required unless auth.allowInsecure: true): name of a K8s Secret with a key
+#       # matching the source name holding the HMAC token. Argo Events validates X-Hub-Signature-256.
+#       # Create: kubectl create secret generic my-secret --from-literal=pagerduty=<token>
+#       - type: webhook
+#         name: pagerduty
+#         auth:
+#           secretName: my-webhook-secret  # bring your own Secret
+#           # allowInsecure: true          # skip HMAC — e.g. for internal-only sources
+#       # sns — required: topicArn; optional: port, endpoint, credentialsSecret
+#       - type: sns
+#         name: aws-alerts
+#         topicArn: "arn:aws:sns:us-east-1:123456789012:aws-alerts"
+#         credentialsSecret: aws-creds
+#       # sqs — required: region, queue; optional: waitTimeSeconds (default 20), credentialsSecret
+#       # - type: sqs
+#       #   name: my-queue
+#       #   region: us-east-1
+#       #   queue: my-queue-name
+#       #   credentialsSecret: aws-creds
+#       # calendar — optional: schedule (cron), interval (default "60s"), timezone
+#       # - type: calendar
+#       #   name: daily-heartbeat
+#       #   interval: 24h
+#       #   timezone: UTC
+#       # resource (K8s events) — required: resource; optional: namespace, group, version, eventTypes
+#       # - type: resource
+#       #   name: pod-watcher
+#       #   resource: pods
+#       #   version: v1
+#       #   eventTypes: [ADD, UPDATE]
+#       # nats — required: url, subject
+#       # - type: nats
+#       #   name: my-subject
+#       #   url: nats://nats:4222
+#       #   subject: sympozium.events
+#     # Optional AND condition — both sources must fire before conditionsReset fires
+#     # condition: pagerduty && aws-alerts
+#     # conditionsResetCron: "*/5 * * * *"   # reset partial AND state every 5 min
+#     targets:
+#       - instanceRef: incident-responder
+#         taskTemplate: |
+#           Alert: {{ .Input.body.messages.0.incident.title }}
+#         filters:
+#           data:
+#             - path: "body.messages.0.event"
+#               type: string
+#               value: "incident.trigger"

@@ -1,0 +1,188 @@
+{{- /*
+  eventsource.yaml
+  ----------------
+  Generates one Argo Events EventSource per route from routes[].sources.
+
+  Supported day-one source types: webhook, sqs, sns, calendar, resource, nats
+
+  Multiple sources of the same or different type on one route are merged into a
+  single EventSource CR — one named entry per source under the matching type key.
+
+  Tailscale annotation hook:
+    spec.service.metadata.annotations is conditionally emitted when
+    tailscale.enabled=true. T11 populates tailscale.annotations; this block
+    is a no-op until then.
+*/ -}}
+{{- range .Values.routes }}
+{{- /* Partition sources by type so each type section appears exactly once */ -}}
+{{- $webhooks := list }}
+{{- $sqsList   := list }}
+{{- $snsList   := list }}
+{{- $calList   := list }}
+{{- $resList   := list }}
+{{- $natsList  := list }}
+{{- range .sources }}
+  {{- if eq .type "webhook"  }}{{- $webhooks = append $webhooks . }}
+  {{- else if eq .type "sqs"      }}{{- $sqsList  = append $sqsList  . }}
+  {{- else if eq .type "sns"      }}{{- $snsList  = append $snsList  . }}
+  {{- else if eq .type "calendar" }}{{- $calList  = append $calList  . }}
+  {{- else if eq .type "resource" }}{{- $resList  = append $resList  . }}
+  {{- else if eq .type "nats"     }}{{- $natsList = append $natsList . }}
+  {{- end }}
+{{- end }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "sympozium-events.labels" $ | nindent 4 }}
+    sympozium-events/route: {{ .name | quote }}
+spec:
+  eventBusName: {{ default "default" $.Values.eventbus.name | quote }}
+  {{- /* ── service block ────────────────────────────────────────────────
+       Always emitted when there are webhook or SNS sources (both listen on
+       an HTTP port). Without spec.service Argo Events 1.9.x does not create
+       a Kubernetes Service for the EventSource.
+       Tailscale annotations are injected here when tailscale.enabled=true. */ -}}
+  {{- $httpSources := concat $webhooks $snsList }}
+  {{- if $httpSources }}
+  service:
+    {{- if and $.Values.tailscale.enabled (not $.Values.tailscale.funnel) }}
+    metadata:
+      annotations:
+        {{- toYaml $.Values.tailscale.annotations | nindent 8 }}
+    {{- end }}
+    ports:
+      {{- $seenPorts := dict }}
+      {{- range $httpSources }}
+      {{- $p := default "12000" .port }}
+      {{- if not (hasKey $seenPorts $p) }}
+      {{- $_ := set $seenPorts $p true }}
+      - port: {{ $p | int }}
+        targetPort: {{ $p | int }}
+        protocol: TCP
+      {{- end }}
+      {{- end }}
+  {{- end }}
+  {{- /* ── webhook ──────────────────────────────────────────────────────
+       Source-level config keys (all optional unless noted):
+         port             — default "12000"
+         endpoint         — default "/<name>"
+         method           — default "POST"
+         auth.secretName  — required: name of a Secret with a key matching
+                            the source name holding the HMAC token.
+                            Argo Events validates X-Hub-Signature-256.
+         auth.allowInsecure: true — opt out of HMAC for this source. */ -}}
+  {{- if $webhooks }}
+  webhook:
+    {{- range $webhooks }}
+    {{ .name }}:
+      port: {{ default "12000" .port | quote }}
+      endpoint: {{ default (printf "/%s" .name) .endpoint | quote }}
+      method: {{ default "POST" .method | quote }}
+      {{- $allowInsecure := false }}
+      {{- $secretName := "" }}
+      {{- if .auth }}
+        {{- $allowInsecure = default false .auth.allowInsecure }}
+        {{- $secretName = default "" .auth.secretName }}
+      {{- end }}
+      {{- if not $allowInsecure }}
+      {{- $secretName = required (printf "webhook source %q: set sources[].auth.secretName or sources[].auth.allowInsecure: true" .name) $secretName }}
+      authSecret:
+        name: {{ $secretName }}
+        key: {{ .name }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* ── sqs ──────────────────────────────────────────────────────────
+       Required: region, queue
+       Optional: waitTimeSeconds (default 20), credentialsSecret */ -}}
+  {{- if $sqsList }}
+  sqs:
+    {{- range $sqsList }}
+    {{ .name }}:
+      region: {{ required (printf "routes[*].sources: region required for sqs source %q" .name) .region | quote }}
+      queue: {{ required (printf "routes[*].sources: queue required for sqs source %q" .name) .queue | quote }}
+      waitTimeSeconds: {{ default 20 .waitTimeSeconds }}
+      {{- if .credentialsSecret }}
+      accessKey:
+        name: {{ .credentialsSecret }}
+        key: access-key-id
+      secretKey:
+        name: {{ .credentialsSecret }}
+        key: secret-access-key
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* ── sns ──────────────────────────────────────────────────────────
+       Required: topicArn
+       Optional: port (default "12000"), endpoint (default "/<name>"),
+                 credentialsSecret */ -}}
+  {{- if $snsList }}
+  sns:
+    {{- range $snsList }}
+    {{ .name }}:
+      topicArn: {{ required (printf "routes[*].sources: topicArn required for sns source %q" .name) .topicArn | quote }}
+      port: {{ default "12000" .port | quote }}
+      endpoint: {{ default (printf "/%s" .name) .endpoint | quote }}
+      {{- if .credentialsSecret }}
+      accessKey:
+        name: {{ .credentialsSecret }}
+        key: access-key-id
+      secretKey:
+        name: {{ .credentialsSecret }}
+        key: secret-access-key
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* ── calendar ─────────────────────────────────────────────────────
+       Optional: schedule (cron), interval (default "60s"), timezone */ -}}
+  {{- if $calList }}
+  calendar:
+    {{- range $calList }}
+    {{ .name }}:
+      {{- if .schedule }}
+      schedule: {{ .schedule | quote }}
+      {{- else }}
+      interval: {{ default "60s" .interval | quote }}
+      {{- end }}
+      {{- if .timezone }}
+      timezone: {{ .timezone | quote }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* ── resource (K8s events) ──────────────────────────────────────
+       Required: resource
+       Optional: namespace (default .Values.namespace), group (default ""),
+                 version (default "v1"), eventTypes (default ADD/UPDATE/DELETE) */ -}}
+  {{- if $resList }}
+  resource:
+    {{- range $resList }}
+    {{ .name }}:
+      namespace: {{ default $.Values.namespace .namespace | quote }}
+      group: {{ default "" .group | quote }}
+      version: {{ default "v1" .version | quote }}
+      resource: {{ required (printf "routes[*].sources: resource required for resource source %q" .name) .resource | quote }}
+      eventTypes:
+        {{- if .eventTypes }}
+        {{- toYaml .eventTypes | nindent 8 }}
+        {{- else }}
+        - ADD
+        - UPDATE
+        - DELETE
+        {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- /* ── nats ─────────────────────────────────────────────────────────
+       Required: url, subject */ -}}
+  {{- if $natsList }}
+  nats:
+    {{- range $natsList }}
+    {{ .name }}:
+      url: {{ required (printf "routes[*].sources: url required for nats source %q" .name) .url | quote }}
+      subject: {{ required (printf "routes[*].sources: subject required for nats source %q" .name) .subject | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}

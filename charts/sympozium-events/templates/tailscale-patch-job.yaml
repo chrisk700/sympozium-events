@@ -1,0 +1,70 @@
+{{- /*
+  tailscale-patch-job.yaml
+  ------------------------
+  Post-install/post-upgrade Job that waits for each EventSource Service to
+  receive a LoadBalancer ingress entry, then patches it with Tailscale
+  annotations using kubectl annotate.
+
+  This is the Option 2 fallback for environments where EventSource
+  spec.service.metadata.annotations passthrough (Option 1) is not supported.
+
+  T04 validation result: Option 1 is preferred and works on current Argo
+  Events versions.  This template is intentionally a no-op under the default
+  annotationMode: annotation — it emits nothing unless both conditions hold:
+    tailscale.enabled=true  AND  tailscale.annotationMode=job
+
+  RBAC note: the Job uses the release service account
+  (sympozium-events.serviceAccountName).  In annotationMode: job that account
+  needs get+patch on Services in argoEvents.resourceNamespace.  Add a
+  RoleBinding manually or extend the rbac.yaml template for your cluster.
+
+  Image: override tailscale.kubectl.image in values if a pinned digest or a
+  different registry is required.  The default (bitnami/kubectl) ships only
+  kubectl — no shell utilities beyond busybox sh are needed.
+*/ -}}
+{{- if and .Values.tailscale.enabled (eq .Values.tailscale.annotationMode "job") }}
+{{- range .Values.routes }}
+{{- $routeName := .name }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "ts-patch-%s" $routeName | trunc 63 | trimSuffix "-" }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "sympozium-events.labels" $ | nindent 4 }}
+    sympozium-events/route: {{ $routeName | quote }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "sympozium-events.serviceAccountName" $ }}
+      containers:
+        - name: kubectl-patch
+          image: {{ $.Values.tailscale.kubectl.image | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              SVC="{{ $routeName }}-eventsource-svc"
+              NS="{{ $.Release.Namespace }}"
+              echo "Waiting for LoadBalancer ingress on svc/${SVC} in ns/${NS}..."
+              kubectl wait "svc/${SVC}" -n "${NS}" \
+                --for=jsonpath='{.status.loadBalancer.ingress}' \
+                --timeout=120s
+              echo "Annotating svc/${SVC}..."
+              ANNOTATIONS=(
+              {{- range $k, $v := $.Values.tailscale.annotations }}
+                "{{ $k }}={{ $v }}"
+              {{- end }}
+              )
+              kubectl annotate "svc/${SVC}" -n "${NS}" --overwrite "${ANNOTATIONS[@]}"
+              echo "Done."
+{{- end }}
+{{- end }}

@@ -1,0 +1,15 @@
+# ci/insecure-webhook.yaml
+# Values with auth.allowInsecure: true on the webhook source.
+# Used to verify no authSecret is emitted and no template error fires.
+
+routes:
+  - name: incident-response
+    sources:
+      - type: webhook
+        name: pagerduty
+        auth:
+          allowInsecure: true
+    targets:
+      - instanceRef: incident-responder
+        taskTemplate: |
+          Alert: {{ .Input.body.messages.0.incident.title }}

@@ -1,0 +1,20 @@
+{{- /*
+  eventbus.yaml
+  -------------
+  Emits the Argo Events JetStream EventBus CR.
+
+  T02 validation confirmed Argo Events cannot share Sympozium's existing NATS
+  JetStream — Argo Events always manages its own StatefulSet.
+  This CR is therefore always emitted; no reuse gate is provided.
+*/ -}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: {{ default "default" .Values.eventbus.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sympozium-events.labels" . | nindent 4 }}
+spec:
+  jetstream:
+    version: {{ .Values.eventbus.version | quote }}

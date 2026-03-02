@@ -1,0 +1,24 @@
+apiVersion: v2
+name: sympozium-events
+description: Argo Events bridge for Sympozium — routes external events to AgentRun CRs
+type: application
+version: 0.1.8
+appVersion: "0.1.8"
+kubeVersion: ">=1.25.0"
+
+annotations:
+  artifacthub.io/signKey: ""
+  artifacthub.io/changes: |
+    - Initial release
+  # Minimum Argo Events controller version required by this chart.
+  # BYO mode (argoEvents.install: false) requires controller >= 1.7.0;
+  # bundled dependency (argoEvents.install: true) uses chart "2.4.x" which
+  # ships controller 1.8.x (chart 2.4.0–2.4.1) or 1.9.x (chart 2.4.2+).
+  sympozium.ai/argoEventsMinVersion: "1.7.0"
+  sympozium.ai/kubernetesMinVersion: "1.25.0"
+
+dependencies:
+  - name: argo-events
+    version: "2.4.x"
+    repository: "https://argoproj.github.io/argo-helm"
+    condition: argoEvents.install

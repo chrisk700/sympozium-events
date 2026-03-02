@@ -1,0 +1,84 @@
+sympozium-events installed successfully.
+Docs: https://chrisk700.github.io/sympozium-events
+
+EventSource/Sensor CRs → {{ .Release.Namespace }}
+AgentRun CRs          → {{ .Values.namespace }}
+
+{{- if .Values.routes }}
+
+Routes configured:
+{{- range .Values.routes }}
+  - {{ .name }} ({{ len .sources }} source(s) → {{ len .targets }} target(s))
+{{- end }}
+
+1. Check reconciliation (~30s after install):
+   kubectl get eventsource,sensor -n {{ .Release.Namespace }}
+   Expected: READY = true on both resources.
+
+2. Check EventBus (JetStream takes ~30s to start):
+   kubectl get eventbus -n {{ .Release.Namespace }}
+   If EventSource/Sensor stay NotReady, check EventBus first.
+
+3. Watch for AgentRun creation:
+   kubectl get agentruns -n {{ .Values.namespace }} -w -l sympozium.ai/trigger=argo-events
+
+4. instanceRef and agentId:
+   instanceRef must match a SympoziumInstance CR name:
+     kubectl get sympoziuminstances -n sympozium-system
+   agentRun.agentId must match an agent in that instance.
+   The chart default ("event-triggered") is a placeholder — set it for your deployment.
+
+5. Deduplication: duplicate webhook payloads create duplicate AgentRuns.
+   Set the Nats-Msg-Id header in your sender for 300s JetStream dedup.
+   See values.yaml comments for details.
+{{- else }}
+
+No routes configured — no EventSource or Sensor resources were created.
+Add routes to your values to start routing events to AgentRuns. Example:
+
+  routes:
+    - name: incident-response
+      sources:
+        - type: webhook
+          name: pagerduty
+      targets:
+        - instanceRef: <your-sympozium-instance>
+          taskTemplate: |
+            Alert: {{ "{{" }} .Input.body.messages.0.incident.title {{ "}}" }}
+{{- end }}
+{{- /* ── Insecure webhook sources warning ──────────────────────────────── */ -}}
+{{- $insecureSources := list }}
+{{- range .Values.routes }}
+  {{- $routeName := .name }}
+  {{- range .sources }}
+    {{- if and (eq .type "webhook") .auth .auth.allowInsecure }}
+      {{- $insecureSources = append $insecureSources (printf "%s/%s" $routeName .name) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if $insecureSources }}
+
+WARNING: the following webhook sources have HMAC auth disabled (auth.allowInsecure: true):
+{{- range $insecureSources }}
+  - {{ . }}
+{{- end }}
+These endpoints accept unauthenticated requests.
+{{- end }}
+{{- if .Values.tailscale.enabled }}
+
+Tailscale: the Tailscale Operator must be installed out of band.
+{{- if .Values.tailscale.funnel }}
+Funnel mode — HTTPS on port 443, Let's Encrypt cert.
+Hostname per route: https://<route-name>.{{ "{{tailnet}}" }}.ts.net/<endpoint>
+Override with routes[].tailscaleHostname if needed.
+Verify the Ingress has an address:
+  kubectl get ingress -n {{ .Release.Namespace }}
+{{- else }}
+Tailnet-only mode — plain HTTP on the webhook port (default 12000).
+The WireGuard layer encrypts the connection; there is no TLS at the HTTP layer.
+Hostname set via tailscale.com/hostname in tailscale.annotations.
+URL form: http://<hostname>.{{ "{{tailnet}}" }}.ts.net:<port>/<endpoint>
+Verify annotations reached the EventSource Service:
+  kubectl get svc -n {{ .Release.Namespace }} -o yaml | grep tailscale
+{{- end }}
+{{- end }}

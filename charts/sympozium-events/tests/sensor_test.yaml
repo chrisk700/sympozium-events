@@ -1,0 +1,124 @@
+suite: sensor
+templates:
+  - sensor.yaml
+values:
+  - ../ci/two-routes.yaml
+
+tests:
+  # ── incident-response (AND route) ──────────────────────────────────────────
+
+  - it: incident-response has correct dependencies list
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.dependencies[0].name
+          value: pagerduty
+      - equal:
+          path: spec.dependencies[1].name
+          value: aws-alerts
+      - equal:
+          path: spec.dependencies[0].eventSourceName
+          value: incident-response
+      - equal:
+          path: spec.dependencies[1].eventSourceName
+          value: incident-response
+
+  - it: incident-response trigger has conditions field (AND route)
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.conditions
+          value: "pagerduty && aws-alerts"
+
+  - it: incident-response trigger has conditionsReset.byTime.cron when conditionsResetCron set
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.conditionsReset[0].byTime.cron
+          value: "*/5 * * * *"
+
+  - it: incident-response trigger has spec.sessionKey parameter destination
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.k8s.parameters[0].dest
+          value: spec.sessionKey
+
+  - it: incident-response trigger has spec.task parameter destination
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.k8s.parameters[1].dest
+          value: spec.task
+
+  - it: incident-response trigger has filters passthrough (filtered target)
+    documentIndex: 0
+    asserts:
+      - exists:
+          path: spec.triggers[0].filters
+      - equal:
+          path: spec.triggers[0].filters.data[0].path
+          value: body.messages.0.event
+      - equal:
+          path: spec.triggers[0].filters.data[0].type
+          value: string
+      - equal:
+          path: spec.triggers[0].filters.data[0].value
+          value: incident.trigger
+
+  # ── scheduled-digest (OR route — no condition, no filters) ─────────────────
+
+  - it: scheduled-digest has correct dependency list
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: spec.dependencies[0].name
+          value: daily-heartbeat
+      - equal:
+          path: spec.dependencies[0].eventSourceName
+          value: scheduled-digest
+
+  - it: scheduled-digest trigger has no conditions field (OR route)
+    documentIndex: 1
+    asserts:
+      - notExists:
+          path: spec.triggers[0].template.conditions
+
+  - it: scheduled-digest trigger has no conditionsReset (OR route, no cron)
+    documentIndex: 1
+    asserts:
+      - notExists:
+          path: spec.triggers[0].template.conditionsReset
+
+  - it: scheduled-digest trigger has no filters
+    documentIndex: 1
+    asserts:
+      - notExists:
+          path: spec.triggers[0].filters
+
+  # ── serviceAccountName ─────────────────────────────────────────────────────
+
+  - it: sensor template has serviceAccountName at correct path
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.serviceAccountName
+          value: RELEASE-NAME-sympozium-events
+
+  # ── agentRun.cleanup ───────────────────────────────────────────────────────
+
+  - it: cleanup defaults to delete
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.k8s.source.resource.spec.cleanup
+          value: delete
+
+  - it: cleanup keep override is emitted
+    documentIndex: 0
+    set:
+      agentRun.cleanup: keep
+    asserts:
+      - equal:
+          path: spec.triggers[0].template.k8s.source.resource.spec.cleanup
+          value: keep

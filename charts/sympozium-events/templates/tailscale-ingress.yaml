@@ -1,0 +1,75 @@
+{{- /*
+  tailscale-ingress.yaml
+  ----------------------
+  Creates ONE Ingress (not one per route) when tailscale.enabled=true AND
+  tailscale.funnel=true.
+
+  A single Tailscale device is provisioned for the entire chart install.
+  Each webhook source across all routes gets one path rule under the shared
+  hostname — matching how Argo Events already routes internally by path.
+
+  URL form: https://<hostname>.<tailnet>.ts.net/<endpoint>
+  Hostname : tailscale.hostname value (default: Helm release name)
+  Endpoint : routes[].sources[].endpoint (default: /<source-name>)
+
+  Example with two routes:
+    https://sympozium-events.<tailnet>.ts.net/pagerduty  → incident-response-eventsource-svc
+    https://sympozium-events.<tailnet>.ts.net/github     → code-review-eventsource-svc
+
+  Note: tailnet-only mode (funnel: false) uses a separate Service annotation
+  approach and has its own hostname (tailscale.com/hostname in tailscale.annotations).
+  The two hostnames are independently configured — see values.yaml comments.
+
+  Prerequisites (out of band):
+    1. Tailscale Kubernetes Operator installed in the cluster.
+    2. Tailnet ACL must grant the funnel attribute to the k8s tag:
+         "nodeAttrs": [{"target": ["tag:k8s"], "attr": ["funnel"]}]
+       Without this ACL entry the proxy pod starts but Funnel is silently
+       inactive — the endpoint will be tailnet-only despite the annotation.
+*/ -}}
+{{- if and .Values.tailscale.enabled .Values.tailscale.funnel }}
+{{- /* Collect all webhook sources across all routes */ -}}
+{{- $webhookPaths := list }}
+{{- range .Values.routes }}
+{{- $routeName := .name }}
+{{- range .sources }}
+{{- if eq .type "webhook" }}
+{{- $webhookPaths = append $webhookPaths (dict
+    "path"    (default (printf "/%s" .name) .endpoint)
+    "service" (printf "%s-eventsource-svc" $routeName)
+    "port"    (default "12000" .port | int)
+) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $webhookPaths }}
+{{- $hostname := default .Release.Name .Values.tailscale.hostname }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sympozium-events.labels" . | nindent 4 }}
+  annotations:
+    tailscale.com/funnel: "true"
+spec:
+  ingressClassName: tailscale
+  rules:
+    - http:
+        paths:
+          {{- range $webhookPaths }}
+          - path: {{ .path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+  tls:
+    - hosts:
+        - {{ $hostname }}
+{{- end }}
+{{- end }}

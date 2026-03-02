@@ -1,0 +1,122 @@
+{{- /*
+  sensor.yaml
+  -----------
+  Generates one Argo Events Sensor per route from routes[].
+
+  Dependencies: one per routes[].sources entry.
+  Condition: routes[].condition → triggers[].template.conditions (AND gate).
+  conditionsReset: routes[].conditionsResetCron (or global conditionsResetCron) →
+    triggers[].template.conditionsReset[].byTime.cron. Resets partial AND state
+    on a cron schedule. Only emitted when conditionsResetCron is non-empty.
+  Triggers: one per routes[].targets entry.
+    k8s trigger: creates AgentRun in .Values.namespace, generateName: <route.name>-
+    parameters:
+      spec.sessionKey ← source-type default event-ID dataTemplate (first source)
+      spec.task       ← targets[].taskTemplate
+                        or defaults.taskTemplates[source.name]
+                        or defaults.taskTemplates[source.type]
+    filters: targets[].filters passed through verbatim at the Trigger level
+             (sibling of template, not inside k8s) — no abstraction.
+*/ -}}
+{{- $lb := "{{" }}
+{{- $rb := "}}" }}
+{{- /*
+  Default sessionKey dataTemplates per source type.
+  These are Go template strings evaluated by Argo Events — not by Helm.
+  printf prevents Helm from treating the braces as template delimiters at
+  render time.
+*/ -}}
+{{- $sessionKeyPaths := dict
+    "webhook"  (printf "%s .Input.body | toJson %s" $lb $rb)
+    "sqs"      (printf "%s .Input.body.MessageId %s" $lb $rb)
+    "sns"      (printf "%s .Input.body.MessageId %s" $lb $rb)
+    "calendar" (printf "%s .Input.eventTime %s" $lb $rb)
+    "resource" (printf "%s .Input.body.metadata.uid %s" $lb $rb)
+    "nats"     (printf "%s .Input.body | toJson %s" $lb $rb)
+-}}
+{{- range .Values.routes }}
+{{- $route := . }}
+{{- $firstSrc := index .sources 0 }}
+{{- $condResetCron := default $.Values.conditionsResetCron .conditionsResetCron | default "" }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "sympozium-events.labels" $ | nindent 4 }}
+    sympozium-events/route: {{ .name | quote }}
+spec:
+  template:
+    serviceAccountName: {{ include "sympozium-events.serviceAccountName" $ }}
+  eventBusName: {{ default "default" $.Values.eventbus.name | quote }}
+  dependencies:
+    {{- range .sources }}
+    - name: {{ .name }}
+      eventSourceName: {{ $route.name }}
+      eventName: {{ .name }}
+    {{- end }}
+  triggers:
+    {{- range .targets }}
+    {{- $target := . }}
+    {{- /*
+      Resolve taskTemplate (priority order):
+        1. targets[].taskTemplate          — explicit per-target override
+        2. defaults.taskTemplates[name]    — named preset  (e.g. pagerduty, github)
+        3. defaults.taskTemplates[type]    — type fallback (e.g. webhook, sqs)
+        4. empty string
+    */ -}}
+    {{- $byName   := index $.Values.defaults.taskTemplates $firstSrc.name | default "" }}
+    {{- $byType   := index $.Values.defaults.taskTemplates $firstSrc.type | default "" }}
+    {{- $taskTmpl := $target.taskTemplate | default $byName | default $byType }}
+    {{- $sessionKey := index $sessionKeyPaths $firstSrc.type | default (printf "%s .Input.eventTime %s" $lb $rb) }}
+    - template:
+        name: create-agentrun-{{ .instanceRef }}
+        {{- if $route.condition }}
+        conditions: {{ $route.condition | quote }}
+        {{- if $condResetCron }}
+        conditionsReset:
+          - byTime:
+              cron: {{ $condResetCron | quote }}
+        {{- end }}
+        {{- end }}
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: sympozium.ai/v1alpha1
+              kind: AgentRun
+              metadata:
+                generateName: {{ $route.name }}-
+                namespace: {{ $.Values.namespace }}
+                labels:
+                  sympozium.ai/trigger: argo-events
+                  sympozium-events/route: {{ $route.name | quote }}
+              spec:
+                instanceRef: {{ .instanceRef }}
+                agentId: {{ $.Values.agentRun.agentId | quote }}
+                model:
+                  provider: {{ $.Values.agentRun.model.provider | quote }}
+                  baseURL: {{ $.Values.agentRun.model.baseURL | quote }}
+                  model: {{ $.Values.agentRun.model.model | quote }}
+                  authSecretRef: {{ $.Values.agentRun.model.authSecretRef | quote }}
+                cleanup: {{ $.Values.agentRun.cleanup }}
+                sessionKey: placeholder
+                task: placeholder
+          parameters:
+            - src:
+                dependencyName: {{ $firstSrc.name }}
+                dataTemplate: {{ $sessionKey | quote }}
+              dest: spec.sessionKey
+            - src:
+                dependencyName: {{ $firstSrc.name }}
+                dataTemplate: |
+{{ $taskTmpl | indent 18 }}
+              dest: spec.task
+      {{- if .filters }}
+      filters:
+        {{- toYaml .filters | nindent 8 }}
+      {{- end }}
+    {{- end }}
+{{- end }}

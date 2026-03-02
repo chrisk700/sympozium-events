@@ -1,0 +1,14 @@
+# ci/calendar-only.yaml
+# Values with no webhook sources — only a calendar route.
+# Used to verify that no auth Secret is rendered when no webhooks exist.
+
+routes:
+  - name: scheduled-digest
+    sources:
+      - type: calendar
+        name: daily-heartbeat
+        interval: 24h
+    targets:
+      - instanceRef: digest-agent
+        taskTemplate: |
+          Run daily digest at {{ .Input.eventTime }}

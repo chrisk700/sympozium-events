@@ -1,0 +1,9 @@
+# .tool-versions — asdf / mise version pins for reproducible local dev
+# Install asdf: https://asdf-vm.com/guide/getting-started.html
+# Install mise: https://mise.jdx.dev/getting-started.html
+#
+# Required asdf plugins:
+#   asdf plugin add helm https://github.com/Antiarchitect/asdf-helm
+#   asdf plugin add task https://github.com/particledecay/asdf-task
+helm 4.1.1
+task 3.48.0

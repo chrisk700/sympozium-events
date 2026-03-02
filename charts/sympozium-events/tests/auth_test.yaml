@@ -1,0 +1,52 @@
+suite: auth — per-source HMAC for webhook sources
+templates:
+  - eventsource.yaml
+values:
+  - ../ci/two-routes.yaml
+
+tests:
+  # ── Secure mode (secretName provided) ─────────────────────────────────────
+
+  - it: webhook source with secretName wires authSecret correctly
+    template: eventsource.yaml
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.webhook.pagerduty.authSecret.name
+          value: pagerduty-hmac-secret
+      - equal:
+          path: spec.webhook.pagerduty.authSecret.key
+          value: pagerduty
+
+  # ── Insecure mode (allowInsecure: true) ────────────────────────────────────
+
+  - it: webhook source with allowInsecure emits no authSecret
+    template: eventsource.yaml
+    values:
+      - ../ci/insecure-webhook.yaml
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: spec.webhook.pagerduty.authSecret
+
+  # ── Missing auth → required error ─────────────────────────────────────────
+
+  - it: webhook source without auth block fails template render
+    template: eventsource.yaml
+    values:
+      - ../ci/no-auth-webhook.yaml
+    asserts:
+      - failedTemplate:
+          errorMessage: 'webhook source "pagerduty": set sources[].auth.secretName or sources[].auth.allowInsecure: true'
+
+  # ── Non-webhook sources unaffected ────────────────────────────────────────
+
+  - it: calendar-only route renders without any auth config
+    template: eventsource.yaml
+    values:
+      - ../ci/calendar-only.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - notExists:
+          path: spec.webhook

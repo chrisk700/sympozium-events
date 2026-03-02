@@ -1,0 +1,67 @@
+# example-values.yaml
+# --------------------
+# Typical user configuration for sympozium-events.
+# Only the fields a user needs to set are shown — everything else defaults correctly.
+# Full reference: charts/sympozium-events/values.yaml
+
+# ── Model (required) ────────────────────────────────────────────────────────
+# Applied to every AgentRun created by the Sensor.
+agentRun:
+  model:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    authSecretRef: anthropic-key   # name of a Secret containing ANTHROPIC_API_KEY
+
+# ── Routes ──────────────────────────────────────────────────────────────────
+routes:
+
+  # PagerDuty → incident responder
+  - name: incident-response
+    sources:
+      - type: webhook
+        name: pagerduty
+    targets:
+      - instanceRef: incident-responder   # kubectl get sympoziuminstances -n sympozium-system
+        filters:
+          data:
+            - path: "body.messages.0.event"
+              type: string
+              value: "incident.trigger"
+        taskTemplate: |
+          Incident triggered: {{ .Input.body.messages.0.incident.title }}
+          Service: {{ .Input.body.messages.0.incident.service.name }}
+          Urgency: {{ .Input.body.messages.0.incident.urgency }}
+          URL: {{ .Input.body.messages.0.incident.html_url }}
+
+  # GitHub PR merged → code reviewer
+  - name: code-review
+    sources:
+      - type: webhook
+        name: github
+    targets:
+      - instanceRef: platform-engineer
+        filters:
+          data:
+            - path: "body.action"
+              type: string
+              value: "closed"
+            - path: "body.pull_request.merged"
+              type: bool
+              value: "true"
+        taskTemplate: |
+          PR merged: {{ .Input.body.pull_request.title }}
+          Author: {{ .Input.body.pull_request.user.login }}
+          Branch: {{ .Input.body.pull_request.head.ref }} → {{ .Input.body.pull_request.base.ref }}
+          URL: {{ .Input.body.pull_request.html_url }}
+
+  # Daily scheduled digest
+  - name: daily-digest
+    sources:
+      - type: calendar
+        name: morning-trigger
+        schedule: "0 9 * * 1-5"   # 09:00 Mon–Fri
+        timezone: Europe/London
+    targets:
+      - instanceRef: sre-watchdog
+        taskTemplate: |
+          Daily SRE digest at {{ .Input.eventTime }}. Review overnight alerts and summarise.

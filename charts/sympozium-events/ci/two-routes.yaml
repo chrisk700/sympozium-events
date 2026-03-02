@@ -1,0 +1,41 @@
+# ci/two-routes.yaml
+# ------------------
+# Values used for `helm template` validation (T06 / T07).
+# Two routes exercising the main Sensor code paths:
+#   Route 1 (incident-response): webhook + sns, AND condition, conditionsResetCron, filters
+#   Route 2 (scheduled-digest):  calendar, no condition, no filters
+
+routes:
+  - name: incident-response
+    sources:
+      - type: webhook
+        name: pagerduty
+        auth:
+          secretName: pagerduty-hmac-secret
+      - type: sns
+        name: aws-alerts
+        topicArn: "arn:aws:sns:us-east-1:123456789012:aws-alerts"
+        credentialsSecret: aws-creds
+    condition: "pagerduty && aws-alerts"
+    conditionsResetCron: "*/5 * * * *"
+    targets:
+      - instanceRef: incident-responder
+        taskTemplate: |
+          Alert: {{ .Input.body.messages.0.incident.title }}
+          Urgency: {{ .Input.body.messages.0.incident.urgency }}
+        filters:
+          data:
+            - path: "body.messages.0.event"
+              type: string
+              value: "incident.trigger"
+
+  - name: scheduled-digest
+    sources:
+      - type: calendar
+        name: daily-heartbeat
+        interval: 24h
+        timezone: UTC
+    targets:
+      - instanceRef: digest-agent
+        taskTemplate: |
+          Run daily digest at {{ .Input.eventTime }}

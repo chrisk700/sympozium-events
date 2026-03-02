@@ -1,0 +1,81 @@
+suite: eventsource
+templates:
+  - eventsource.yaml
+values:
+  - ../ci/two-routes.yaml
+
+tests:
+  # ── incident-response EventSource ──────────────────────────────────────────
+
+  - it: incident-response EventSource has webhook section for webhook source
+    documentIndex: 0
+    asserts:
+      - exists:
+          path: spec.webhook
+      - equal:
+          path: spec.webhook.pagerduty.port
+          value: "12000"
+      - equal:
+          path: spec.webhook.pagerduty.endpoint
+          value: /pagerduty
+      - equal:
+          path: spec.webhook.pagerduty.method
+          value: POST
+      - exists:
+          path: spec.webhook.pagerduty.authSecret
+      - equal:
+          path: spec.webhook.pagerduty.authSecret.name
+          value: pagerduty-hmac-secret
+
+  - it: incident-response EventSource has sns section for sns source
+    documentIndex: 0
+    asserts:
+      - exists:
+          path: spec.sns
+      - equal:
+          path: spec.sns.aws-alerts.topicArn
+          value: "arn:aws:sns:us-east-1:123456789012:aws-alerts"
+
+  # ── scheduled-digest EventSource ───────────────────────────────────────────
+
+  - it: scheduled-digest EventSource has calendar section for calendar source
+    documentIndex: 1
+    asserts:
+      - exists:
+          path: spec.calendar
+      - equal:
+          path: spec.calendar.daily-heartbeat.interval
+          value: "24h"
+      - equal:
+          path: spec.calendar.daily-heartbeat.timezone
+          value: UTC
+
+  # ── Tailscale annotation injection ─────────────────────────────────────────
+
+  - it: service.metadata.annotations emitted when tailscale.enabled is true
+    documentIndex: 0
+    set:
+      tailscale.enabled: true
+      tailscale.annotations:
+        tailscale.com/expose: "true"
+        tailscale.com/funnel: "true"
+    asserts:
+      - exists:
+          path: spec.service.metadata.annotations
+      - equal:
+          path: spec.service.metadata.annotations["tailscale.com/expose"]
+          value: "true"
+
+  - it: spec.service.ports emitted for webhook+SNS sources (no tailscale)
+    documentIndex: 0
+    asserts:
+      - exists:
+          path: spec.service.ports
+      - notExists:
+          path: spec.service.metadata
+
+  - it: spec.service absent for calendar-only EventSource
+    documentIndex: 1
+    asserts:
+      - notExists:
+          path: spec.service

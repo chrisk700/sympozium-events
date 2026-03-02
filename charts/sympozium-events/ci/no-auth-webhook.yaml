@@ -1,0 +1,13 @@
+# ci/no-auth-webhook.yaml
+# Values with a webhook source that has NO auth block at all.
+# Used to verify the template fails with a clear error message.
+
+routes:
+  - name: incident-response
+    sources:
+      - type: webhook
+        name: pagerduty
+    targets:
+      - instanceRef: incident-responder
+        taskTemplate: |
+          Alert: {{ .Input.body.messages.0.incident.title }}

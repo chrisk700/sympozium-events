@@ -1,0 +1,60 @@
+suite: rbac
+templates:
+  - rbac.yaml
+values:
+  - ../ci/two-routes.yaml
+
+tests:
+  # ── serviceAccount.create: true (default) ──────────────────────────────────
+  # document layout: 0=ServiceAccount, 1=Role, 2=RoleBinding
+
+  - it: ServiceAccount is created (documentIndex 0) when serviceAccount.create is true
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: ServiceAccount
+
+  - it: Role is at documentIndex 1 in namespace sympozium-system
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: sympozium-system
+
+  - it: RoleBinding is at documentIndex 2 in namespace sympozium-system
+    documentIndex: 2
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: sympozium-system
+
+  - it: RoleBinding subject namespace equals the release namespace
+    documentIndex: 2
+    release:
+      namespace: sympozium-events
+    asserts:
+      - equal:
+          path: subjects[0].namespace
+          value: sympozium-events
+
+  # ── serviceAccount.create: false ───────────────────────────────────────────
+  # document layout: 0=Role, 1=RoleBinding (no ServiceAccount)
+
+  - it: no ServiceAccount when serviceAccount.create is false (only 2 documents)
+    set:
+      serviceAccount.create: false
+    asserts:
+      - hasDocuments:
+          count: 2
+
+  - it: first document is Role (not ServiceAccount) when serviceAccount.create is false
+    documentIndex: 0
+    set:
+      serviceAccount.create: false
+    asserts:
+      - isKind:
+          of: Role

@@ -1,0 +1,110 @@
+version: "3"
+
+vars:
+  CHART_DIR: charts/sympozium-events
+  CI_VALUES: charts/sympozium-events/ci/two-routes.yaml
+  DIST_DIR: dist
+
+tasks:
+  # ── crds:extract ──────────────────────────────────────────────────────────
+  crds:extract:
+    desc: Extract Argo Events CRDs from bundled subchart tgz into crds/ (run after helm dependency update)
+    cmds:
+      - rm -rf {{.CHART_DIR}}/crds && mkdir -p {{.CHART_DIR}}/crds
+      - tar xzf {{.CHART_DIR}}/charts/argo-events-*.tgz -C {{.CHART_DIR}}/crds/ --strip-components=3 argo-events/templates/crds/
+      - find {{.CHART_DIR}}/crds/ -name "*.yml" -exec sed -i.bak '/^[[:space:]]*{{"{{"}}/d' {} +
+      - find {{.CHART_DIR}}/crds/ -name "*.bak" -delete
+
+  # ── lint ──────────────────────────────────────────────────────────────────
+  lint:
+    desc: Update chart dependencies, extract CRDs, and run helm lint --strict against ci/two-routes.yaml
+    cmds:
+      - |
+        for attempt in 1 2 3; do
+          helm dependency update {{.CHART_DIR}}/ && break
+          echo "helm dependency update failed (attempt $attempt/3), retrying in 10s..."
+          sleep 10
+        done
+      - task: crds:extract
+      - helm lint {{.CHART_DIR}}/ -f {{.CI_VALUES}} --strict
+
+  # ── template ──────────────────────────────────────────────────────────────
+  template:
+    desc: Render chart with ci/two-routes.yaml and print to stdout (useful during authoring)
+    cmds:
+      - helm template sympozium-events {{.CHART_DIR}}/ -f {{.CI_VALUES}}
+
+  # ── test ──────────────────────────────────────────────────────────────────
+  test:
+    desc: Run helm-unittest test suite (requires helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false)
+    cmds:
+      - helm unittest {{.CHART_DIR}}/
+
+  # ── test:lint ─────────────────────────────────────────────────────────────
+  test:lint:
+    desc: Run lint then helm-unittest in sequence
+    cmds:
+      - task: lint
+      - task: test
+
+  # ── package ───────────────────────────────────────────────────────────────
+  package:
+    desc: Package the chart to dist/
+    cmds:
+      - mkdir -p {{.DIST_DIR}}
+      - helm package {{.CHART_DIR}}/ -d {{.DIST_DIR}}/
+
+  # ── docs:serve ────────────────────────────────────────────────────────────
+  docs:serve:
+    desc: Serve docs locally at http://127.0.0.1:8000 (requires pip install zensical)
+    cmds:
+      - zensical serve
+
+  # ── docs:build ────────────────────────────────────────────────────────────
+  docs:build:
+    desc: Build docs site to site/ (requires pip install zensical)
+    cmds:
+      - zensical build
+
+  # ── release ───────────────────────────────────────────────────────────────
+  release:
+    desc: (CI use only) Package and push chart to GHCR. See .github/workflows/release.yaml.
+    cmds:
+      - echo "release task is for CI only — see .github/workflows/release.yaml"
+
+  # ── deps ──────────────────────────────────────────────────────────────────
+  deps:
+    desc: Check and install local tooling prerequisites (helm, helm-unittest plugin, task, mkdocs-material)
+    cmds:
+      - |
+        echo "==> Checking helm..."
+        if ! command -v helm &>/dev/null; then
+          echo "  helm not found — install from https://helm.sh/docs/intro/install/"
+          exit 1
+        else
+          echo "  helm $(helm version --short) OK"
+        fi
+      - |
+        echo "==> Checking helm-unittest plugin..."
+        if ! helm plugin list | grep -q 'unittest'; then
+          echo "  Installing helm-unittest..."
+          helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false
+        else
+          echo "  helm-unittest $(helm plugin list | awk '/unittest/{print $2}') OK"
+        fi
+      - |
+        echo "==> Checking task (go-task)..."
+        if ! command -v task &>/dev/null; then
+          echo "  task not found — install from https://taskfile.dev/installation/"
+          exit 1
+        else
+          echo "  task $(task --version) OK"
+        fi
+      - |
+        echo "==> Checking zensical (docs)..."
+        if ! command -v zensical &>/dev/null; then
+          echo "  zensical not found — pip install zensical"
+          echo "  (only required for docs:serve / docs:build)"
+        else
+          echo "  zensical OK"
+        fi

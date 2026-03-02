@@ -1,0 +1,74 @@
+site_name: sympozium-events
+site_description: Argo Events bridge for Sympozium — routes external signals to AgentRun CRs
+site_url: https://chrisk700.github.io/sympozium-events
+repo_url: https://github.com/chrisk700/sympozium-events
+repo_name: chrisk700/sympozium-events
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - toc:
+      permalink: true
+  - attr_list
+  - tables
+
+nav:
+  - Home: index.md
+  - Getting started:
+    - Prerequisites: getting-started/prerequisites.md
+    - Installation: getting-started/installation.md
+    - First route: getting-started/first-route.md
+  - Signal sources:
+    - Webhook: sources/webhook.md
+    - AWS SQS / SNS: sources/sqs-sns.md
+    - Calendar: sources/calendar.md
+    - Kubernetes events: sources/kubernetes-events.md
+    - NATS: sources/nats.md
+  - Tailscale:
+    - Tailnet-only: tailscale/tailnet-only.md
+    - Funnel (public internet): tailscale/funnel.md
+  - Reference:
+    - Values: reference/values.md
+    - CLI selectors: reference/cli-selectors.md
+  - Advanced:
+    - Session deduplication: advanced/session-dedup.md
+    - AND conditions: advanced/and-conditions.md
+    - CRD management: advanced/crd-management.md
+  - Known limitations: known-limitations.md
